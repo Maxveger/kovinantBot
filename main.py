@@ -1,17 +1,20 @@
-from flask import Flask, request, send_from_directory
+from flask import Flask, request, send_file
 import os
 import shutil
 import pandas as pd
 from docx import Document
 from docxtpl import DocxTemplate
+import zipfile
 
 app = Flask(__name__)
 
 # Папка для загрузки файлов и сгенерированных документов
 UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'generated_documents'
+ACTS_FOLDER = 'generated_acts'
+CONTRACTS_FOLDER = 'generated_contracts'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+os.makedirs(ACTS_FOLDER, exist_ok=True)
+os.makedirs(CONTRACTS_FOLDER, exist_ok=True)
 
 # Разрешённые расширения файлов
 ALLOWED_EXTENSIONS = {'xls', 'xlsx'}
@@ -20,7 +23,7 @@ ALLOWED_EXTENSIONS = {'xls', 'xlsx'}
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Главная страница с улучшенным оформлением
+# Главная страница с формой для загрузки файла
 @app.route('/')
 def index():
     return '''
@@ -81,20 +84,21 @@ def process_file(file_path):
     if "date_pass" in data.columns:
         data["date_pass"] = pd.to_datetime(data["date_pass"], errors='coerce').dt.strftime("%d.%m.%Y")
 
+    # Генерация актов
     for index, row in data.iterrows():
-        new_filename = os.path.join(OUTPUT_FOLDER, f"{row['name']}.docx")
-        shutil.copy("templates/templ_akt.docx", new_filename)
-        new_doc = Document(new_filename)
+        # Генерация акта
+        act_filename = os.path.join(ACTS_FOLDER, f"{row['name']}_act.docx")
+        shutil.copy("templates/templ_akt.docx", act_filename)
+        new_act = Document(act_filename)
 
-        # Заменяем текст в абзацах
-        for para in new_doc.paragraphs:
+        # Заменяем текст в актах
+        for para in new_act.paragraphs:
             for column in data.columns:
                 placeholder = f"{{{column}}}"
                 if placeholder in para.text:
                     para.text = para.text.replace(placeholder, str(row[column]))
 
-        # Заменяем текст в таблицах
-        for table in new_doc.tables:
+        for table in new_act.tables:
             for row_cells in table.rows:
                 for cell in row_cells.cells:
                     for column in data.columns:
@@ -102,9 +106,45 @@ def process_file(file_path):
                         if placeholder in cell.text:
                             cell.text = cell.text.replace(placeholder, str(row[column]))
 
-        new_doc.save(new_filename)
+        new_act.save(act_filename)
 
-    return send_from_directory(OUTPUT_FOLDER, f"{row['name']}.docx", as_attachment=True)
+        # Генерация договора
+        contract_filename = os.path.join(CONTRACTS_FOLDER, f"{row['name']}_contract.docx")
+        shutil.copy("templates/templ_dogovor.docx", contract_filename)
+        new_contract = Document(contract_filename)
+
+        # Заменяем текст в договорах
+        for para in new_contract.paragraphs:
+            for column in data.columns:
+                placeholder = f"{{{column}}}"
+                if placeholder in para.text:
+                    para.text = para.text.replace(placeholder, str(row[column]))
+
+        for table in new_contract.tables:
+            for row_cells in table.rows:
+                for cell in row_cells.cells:
+                    for column in data.columns:
+                        placeholder = f"{{{column}}}"
+                        if placeholder in cell.text:
+                            cell.text = cell.text.replace(placeholder, str(row[column]))
+
+        new_contract.save(contract_filename)
+
+    # Создание архива с документами
+    zip_filename = 'generated_documents.zip'
+    with zipfile.ZipFile(zip_filename, 'w') as zipf:
+        # Добавляем акты
+        for root, dirs, files in os.walk(ACTS_FOLDER):
+            for file in files:
+                zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), ACTS_FOLDER))
+        
+        # Добавляем договоры
+        for root, dirs, files in os.walk(CONTRACTS_FOLDER):
+            for file in files:
+                zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), CONTRACTS_FOLDER))
+
+    # Отправка архива
+    return send_file(zip_filename, as_attachment=True)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
