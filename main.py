@@ -1,85 +1,110 @@
+from flask import Flask, request, send_from_directory
 import os
-from flask import Flask, request, send_file, render_template_string
-from docxtpl import DocxTemplate
+import shutil
 import pandas as pd
-import zipfile
-from io import BytesIO
+from docx import Document
+from docxtpl import DocxTemplate
 
 app = Flask(__name__)
 
-UPLOAD_FORM = """
-<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <title>Загрузка Excel-файла</title>
-  <style>
-    body {
-      font-family: sans-serif;
-      background-color: #f8f8f8;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-    }
-    .container {
-      background: white;
-      padding: 2em;
-      border-radius: 10px;
-      box-shadow: 0 0 10px rgba(0,0,0,0.1);
-      text-align: center;
-    }
-    input[type=file], input[type=submit] {
-      margin: 1em 0;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Генерация Word-документов</h1>
-    <p>Загрузите Excel-файл с данными:</p>
-    <form method=post enctype=multipart/form-data>
-      <input type=file name=file>
-      <br>
-      <input type=submit value="Загрузить и получить ZIP">
-    </form>
-  </div>
-</body>
-</html>
-"""
+# Папка для загрузки файлов и сгенерированных документов
+UPLOAD_FOLDER = 'uploads'
+OUTPUT_FOLDER = 'generated_documents'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-@app.route('/upload', methods=['GET', 'POST'])
-def upload_file():
-    if request.method == 'POST':
-        uploaded_file = request.files['file']
-        if uploaded_file and uploaded_file.filename.endswith(('.xlsx', '.xls')):
-            df = pd.read_excel(uploaded_file)
-            output = BytesIO()
+# Разрешённые расширения файлов
+ALLOWED_EXTENSIONS = {'xls', 'xlsx'}
 
-            with zipfile.ZipFile(output, 'w') as zipf:
-                for i, row in df.iterrows():
-                    context = row.to_dict()
+# Функция для проверки разрешённого расширения файла
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-                    for template_file, suffix in [('templ_akt.docx', 'akt'), ('templ_dogovor.docx', 'dogovor')]:
-                        doc = DocxTemplate(os.path.join('templates', template_file))
-                        doc.render(context)
-                        result_stream = BytesIO()
-                        doc.save(result_stream)
-                        result_stream.seek(0)
-
-                        filename = f"{context.get('name', 'document')}_{suffix}.docx"
-                        zipf.writestr(filename, result_stream.read())
-
-            output.seek(0)
-            return send_file(output, as_attachment=True, download_name='documents.zip', mimetype='application/zip')
-        else:
-            return 'Поддерживаются только Excel-файлы (.xls, .xlsx)'
-    return render_template_string(UPLOAD_FORM)
-
+# Главная страница с улучшенным оформлением
 @app.route('/')
-def home():
-    return '<h2>Сервис работает. Перейдите на <a href="/upload">/upload</a>, чтобы загрузить Excel-файл.</h2>'
+def index():
+    return '''
+        <html>
+            <head>
+                <title>Генератор документов</title>
+                <style>
+                    body {
+                        font-family: Arial, sans-serif;
+                        background-color: #f4f4f9;
+                        padding: 20px;
+                    }
+                    h1 {
+                        color: #333;
+                    }
+                    form {
+                        background-color: #fff;
+                        padding: 20px;
+                        border-radius: 8px;
+                        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+                    }
+                    input[type="file"] {
+                        margin-top: 10px;
+                    }
+                </style>
+            </head>
+            <body>
+                <h1>Загрузите Excel файл для генерации документов</h1>
+                <form method="POST" enctype="multipart/form-data" action="/upload">
+                    <input type="file" name="file" />
+                    <input type="submit" value="Загрузить файл" />
+                </form>
+            </body>
+        </html>
+    '''
+
+# Страница для загрузки файла
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files:
+        return 'Нет файла в запросе', 400
+
+    file = request.files['file']
+
+    if file.filename == '':
+        return 'Файл не выбран', 400
+
+    if file and allowed_file(file.filename):
+        filename = os.path.join(UPLOAD_FOLDER, file.filename)
+        file.save(filename)
+        return process_file(filename)
+    else:
+        return 'Неверный формат файла', 400
+
+# Обработка Excel файла и генерация документов
+def process_file(file_path):
+    data = pd.read_excel(file_path, dtype=str)
+    if "date_pass" in data.columns:
+        data["date_pass"] = pd.to_datetime(data["date_pass"], errors='coerce').dt.strftime("%d.%m.%Y")
+
+    for index, row in data.iterrows():
+        new_filename = os.path.join(OUTPUT_FOLDER, f"{row['name']}.docx")
+        shutil.copy("templates/templ_akt.docx", new_filename)
+        new_doc = Document(new_filename)
+
+        # Заменяем текст в абзацах
+        for para in new_doc.paragraphs:
+            for column in data.columns:
+                placeholder = f"{{{column}}}"
+                if placeholder in para.text:
+                    para.text = para.text.replace(placeholder, str(row[column]))
+
+        # Заменяем текст в таблицах
+        for table in new_doc.tables:
+            for row_cells in table.rows:
+                for cell in row_cells.cells:
+                    for column in data.columns:
+                        placeholder = f"{{{column}}}"
+                        if placeholder in cell.text:
+                            cell.text = cell.text.replace(placeholder, str(row[column]))
+
+        new_doc.save(new_filename)
+
+    return send_from_directory(OUTPUT_FOLDER, f"{row['name']}.docx", as_attachment=True)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
