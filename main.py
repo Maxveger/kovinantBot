@@ -130,4 +130,6 @@ def get_last_updated_date(template_name):
     return "Not updated yet"
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Используем переменную окружения для порта
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
