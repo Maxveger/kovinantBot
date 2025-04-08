@@ -1,47 +1,43 @@
-from flask import Flask, request, send_file
-import pandas as pd
-from docx import Document
-import zipfile
+from flask import Flask, request, send_file, render_template_string
 import os
-import io
+import zipfile
+import pandas as pd  # если используешь для обработки
+from io import BytesIO
 
 app = Flask(__name__)
 
+# HTML-форма
+UPLOAD_FORM = """
+<!doctype html>
+<title>Загрузить Excel</title>
+<h1>Загрузите Excel-файл</h1>
+<form method=post enctype=multipart/form-data>
+  <input type=file name=file>
+  <input type=submit value=Загрузить>
+</form>
+"""
+
+@app.route('/upload', methods=['GET', 'POST'])
+def upload_file():
+    if request.method == 'POST':
+        uploaded_file = request.files['file']
+        if uploaded_file.filename.endswith('.xlsx') or uploaded_file.filename.endswith('.xls'):
+            # Обработка файла
+            input_excel = uploaded_file.read()
+            df = pd.read_excel(BytesIO(input_excel))
+
+            # Создание документа(ов) — пока просто сохраняем Excel как CSV
+            output = BytesIO()
+            with zipfile.ZipFile(output, 'w') as zipf:
+                csv_data = df.to_csv(index=False).encode('utf-8')
+                zipf.writestr('converted.csv', csv_data)
+
+            output.seek(0)
+            return send_file(output, as_attachment=True, download_name='result.zip', mimetype='application/zip')
+        else:
+            return 'Поддерживаются только Excel-файлы (.xls, .xlsx)'
+    return render_template_string(UPLOAD_FORM)
+
 @app.route('/')
-def index():
-    return 'Сервис работает. Загрузите файл на /upload'
-
-@app.route('/upload', methods=['POST'])
-def upload():
-    if 'file' not in request.files:
-        return 'Файл не найден', 400
-
-    file = request.files['file']
-    df = pd.read_excel(file)
-
-    # Обработка и создание Word-документов
-    doc1 = Document('templates/шаблон1.docx')
-    doc2 = Document('templates/шаблон2.docx')
-
-    # Пример подстановки — сделай как у тебя в локальной версии
-    for p in doc1.paragraphs:
-        p.text = p.text.replace('{{name}}', str(df.iloc[0]['Имя']))
-
-    for p in doc2.paragraphs:
-        p.text = p.text.replace('{{name}}', str(df.iloc[0]['Имя']))
-
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w') as zipf:
-        doc1_io = io.BytesIO()
-        doc1.save(doc1_io)
-        zipf.writestr('output1.docx', doc1_io.getvalue())
-
-        doc2_io = io.BytesIO()
-        doc2.save(doc2_io)
-        zipf.writestr('output2.docx', doc2_io.getvalue())
-
-    buffer.seek(0)
-    return send_file(buffer, mimetype='application/zip', as_attachment=True, download_name='documents.zip')
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+def home():
+    return '<h2>Сервис работает. Перейдите на <a href="/upload">/upload</a> чтобы загрузить файл.</h2>'
