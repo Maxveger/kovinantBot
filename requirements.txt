@@ -1,4 +1,4 @@
 pandas
 python-docx
 openpyxl
-telebot
+python-telegram-bot==13.15
