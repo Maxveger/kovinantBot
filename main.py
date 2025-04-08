@@ -1,12 +1,11 @@
-from flask import Flask, request, send_file, render_template_string
 import os
+from flask import Flask, request, send_file, render_template_string
 import zipfile
-import pandas as pd  # если используешь для обработки
 from io import BytesIO
+import pandas as pd
 
 app = Flask(__name__)
 
-# HTML-форма
 UPLOAD_FORM = """
 <!doctype html>
 <title>Загрузить Excel</title>
@@ -22,11 +21,9 @@ def upload_file():
     if request.method == 'POST':
         uploaded_file = request.files['file']
         if uploaded_file.filename.endswith('.xlsx') or uploaded_file.filename.endswith('.xls'):
-            # Обработка файла
             input_excel = uploaded_file.read()
             df = pd.read_excel(BytesIO(input_excel))
 
-            # Создание документа(ов) — пока просто сохраняем Excel как CSV
             output = BytesIO()
             with zipfile.ZipFile(output, 'w') as zipf:
                 csv_data = df.to_csv(index=False).encode('utf-8')
@@ -41,3 +38,8 @@ def upload_file():
 @app.route('/')
 def home():
     return '<h2>Сервис работает. Перейдите на <a href="/upload">/upload</a> чтобы загрузить файл.</h2>'
+
+# === ВАЖНО: слушаем PORT из переменной окружения ===
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
