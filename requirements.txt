@@ -1,3 +1,4 @@
-python-telegram-bot==20.0
-python-docx==0.8.11
-openpyxl==3.0.10
+pandas
+python-docx
+openpyxl
+telebot
