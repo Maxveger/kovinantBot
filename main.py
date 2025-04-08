@@ -1,150 +1,136 @@
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, redirect
 import os
 import shutil
 import pandas as pd
 from docx import Document
-from docxtpl import DocxTemplate
 import zipfile
+from datetime import datetime
 
 app = Flask(__name__)
 
-# Папка для загрузки файлов и сгенерированных документов
 UPLOAD_FOLDER = 'uploads'
 ACTS_FOLDER = 'generated_acts'
 CONTRACTS_FOLDER = 'generated_contracts'
+TEMPLATE_FOLDER = 'templates'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(ACTS_FOLDER, exist_ok=True)
 os.makedirs(CONTRACTS_FOLDER, exist_ok=True)
+os.makedirs(TEMPLATE_FOLDER, exist_ok=True)
 
-# Разрешённые расширения файлов
 ALLOWED_EXTENSIONS = {'xls', 'xlsx'}
+TEMPLATES = {
+    'templ_akt.docx': 'Шаблон акта',
+    'templ_dogovor.docx': 'Шаблон договора'
+}
 
-# Функция для проверки разрешённого расширения файла
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Главная страница с формой для загрузки файла
 @app.route('/')
 def index():
-    return '''
+    act_time = get_template_update_time('templ_akt.docx')
+    dog_time = get_template_update_time('templ_dogovor.docx')
+    return f'''
         <html>
-            <head>
-                <title>Генератор документов</title>
-                <style>
-                    body {
-                        font-family: Arial, sans-serif;
-                        background-color: #f4f4f9;
-                        padding: 20px;
-                    }
-                    h1 {
-                        color: #333;
-                    }
-                    form {
-                        background-color: #fff;
-                        padding: 20px;
-                        border-radius: 8px;
-                        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-                    }
-                    input[type="file"] {
-                        margin-top: 10px;
-                    }
-                </style>
-            </head>
-            <body>
-                <h1>Загрузите Excel файл для генерации документов</h1>
+            <head><title>Генератор документов</title></head>
+            <body style="font-family: sans-serif">
+                <h1>Генерация документов</h1>
                 <form method="POST" enctype="multipart/form-data" action="/upload">
+                    <p><b>Excel-файл</b>:</p>
                     <input type="file" name="file" />
-                    <input type="submit" value="Загрузить файл" />
+                    <input type="submit" value="Сгенерировать" />
+                </form>
+                <hr>
+                <h2>Обновить шаблоны</h2>
+                <form method="POST" enctype="multipart/form-data" action="/upload_template">
+                    <p><b>Загрузить новый шаблон акта (templ_akt.docx)</b><br>
+                    Последнее обновление: {act_time}</p>
+                    <input type="file" name="template" />
+                    <input type="submit" value="Обновить акт" />
+                </form>
+                <form method="POST" enctype="multipart/form-data" action="/upload_template">
+                    <p><b>Загрузить новый шаблон договора (templ_dogovor.docx)</b><br>
+                    Последнее обновление: {dog_time}</p>
+                    <input type="file" name="template" />
+                    <input type="submit" value="Обновить договор" />
                 </form>
             </body>
         </html>
     '''
 
-# Страница для загрузки файла
+@app.route('/upload_template', methods=['POST'])
+def upload_template():
+    file = request.files.get('template')
+    if not file or not file.filename:
+        return 'Файл не выбран', 400
+
+    filename = file.filename
+    if filename not in TEMPLATES:
+        return f'Имя файла должно быть одним из: {", ".join(TEMPLATES.keys())}', 400
+
+    file.save(os.path.join(TEMPLATE_FOLDER, filename))
+    return redirect('/')
+
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
         return 'Нет файла в запросе', 400
-
     file = request.files['file']
-
     if file.filename == '':
         return 'Файл не выбран', 400
-
     if file and allowed_file(file.filename):
-        filename = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(filename)
-        return process_file(filename)
-    else:
-        return 'Неверный формат файла', 400
+        filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+        file.save(filepath)
+        return process_file(filepath)
+    return 'Неверный формат файла', 400
 
-# Обработка Excel файла и генерация документов
 def process_file(file_path):
     data = pd.read_excel(file_path, dtype=str)
     if "date_pass" in data.columns:
         data["date_pass"] = pd.to_datetime(data["date_pass"], errors='coerce').dt.strftime("%d.%m.%Y")
 
-    # Генерация актов
     for index, row in data.iterrows():
-        # Генерация акта
         act_filename = os.path.join(ACTS_FOLDER, f"{row['name']}_act.docx")
-        shutil.copy("templates/templ_akt.docx", act_filename)
-        new_act = Document(act_filename)
+        shutil.copy(os.path.join(TEMPLATE_FOLDER, "templ_akt.docx"), act_filename)
+        fill_doc(act_filename, row)
 
-        # Заменяем текст в актах
-        for para in new_act.paragraphs:
-            for column in data.columns:
-                placeholder = f"{{{column}}}"
-                if placeholder in para.text:
-                    para.text = para.text.replace(placeholder, str(row[column]))
-
-        for table in new_act.tables:
-            for row_cells in table.rows:
-                for cell in row_cells.cells:
-                    for column in data.columns:
-                        placeholder = f"{{{column}}}"
-                        if placeholder in cell.text:
-                            cell.text = cell.text.replace(placeholder, str(row[column]))
-
-        new_act.save(act_filename)
-
-        # Генерация договора
         contract_filename = os.path.join(CONTRACTS_FOLDER, f"{row['name']}_contract.docx")
-        shutil.copy("templates/templ_dogovor.docx", contract_filename)
-        new_contract = Document(contract_filename)
+        shutil.copy(os.path.join(TEMPLATE_FOLDER, "templ_dogovor.docx"), contract_filename)
+        fill_doc(contract_filename, row)
 
-        # Заменяем текст в договорах
-        for para in new_contract.paragraphs:
-            for column in data.columns:
-                placeholder = f"{{{column}}}"
-                if placeholder in para.text:
-                    para.text = para.text.replace(placeholder, str(row[column]))
-
-        for table in new_contract.tables:
-            for row_cells in table.rows:
-                for cell in row_cells.cells:
-                    for column in data.columns:
-                        placeholder = f"{{{column}}}"
-                        if placeholder in cell.text:
-                            cell.text = cell.text.replace(placeholder, str(row[column]))
-
-        new_contract.save(contract_filename)
-
-    # Создание архива с документами
     zip_filename = 'generated_documents.zip'
     with zipfile.ZipFile(zip_filename, 'w') as zipf:
-        # Добавляем акты
-        for root, dirs, files in os.walk(ACTS_FOLDER):
+        for root, _, files in os.walk(ACTS_FOLDER):
             for file in files:
                 zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), ACTS_FOLDER))
-        
-        # Добавляем договоры
-        for root, dirs, files in os.walk(CONTRACTS_FOLDER):
+        for root, _, files in os.walk(CONTRACTS_FOLDER):
             for file in files:
                 zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), CONTRACTS_FOLDER))
 
-    # Отправка архива
     return send_file(zip_filename, as_attachment=True)
+
+def fill_doc(doc_path, row):
+    doc = Document(doc_path)
+    for para in doc.paragraphs:
+        for column, value in row.items():
+            placeholder = f"{{{column}}}"
+            if placeholder in para.text:
+                para.text = para.text.replace(placeholder, str(value))
+    for table in doc.tables:
+        for row_cells in table.rows:
+            for cell in row_cells.cells:
+                for column, value in row.items():
+                    placeholder = f"{{{column}}}"
+                    if placeholder in cell.text:
+                        cell.text = cell.text.replace(placeholder, str(value))
+    doc.save(doc_path)
+
+def get_template_update_time(filename):
+    path = os.path.join(TEMPLATE_FOLDER, filename)
+    if os.path.exists(path):
+        timestamp = os.path.getmtime(path)
+        return datetime.fromtimestamp(timestamp).strftime('%d.%m.%Y %H:%M:%S')
+    return 'Не загружено'
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
