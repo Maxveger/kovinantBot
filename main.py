@@ -1,75 +1,47 @@
-import os
-import shutil
-import zipfile
+from flask import Flask, request, send_file
 import pandas as pd
 from docx import Document
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
+import zipfile
+import os
+import io
 
-TOKEN = "7657658757:AAHrJryVwv0gMrvftnY5MrSOD7MZOzDQ3To"
+app = Flask(__name__)
 
-TEMPLATES = {
-    "Договор": "templates/templ_dogovor.docx",
-    "Акт": "templates/templ_akt.docx",
-}
+@app.route('/')
+def index():
+    return 'Сервис работает. Загрузите файл на /upload'
 
-OUTPUT_DIR = "output"
+@app.route('/upload', methods=['POST'])
+def upload():
+    if 'file' not in request.files:
+        return 'Файл не найден', 400
 
-async def handle_file(update: Update, context: CallbackContext):
-    await update.message.reply_text("Получил файл, обрабатываю...")
+    file = request.files['file']
+    df = pd.read_excel(file)
 
-    file = await update.message.document.get_file()
-    file_path = "input.xlsx"
-    await file.download_to_drive(file_path)
+    # Обработка и создание Word-документов
+    doc1 = Document('templates/шаблон1.docx')
+    doc2 = Document('templates/шаблон2.docx')
 
-    df = pd.read_excel(file_path, dtype=str)
-    if "date_pass" in df.columns:
-        df["date_pass"] = pd.to_datetime(df["date_pass"], errors="coerce").dt.strftime("%d.%m.%Y")
+    # Пример подстановки — сделай как у тебя в локальной версии
+    for p in doc1.paragraphs:
+        p.text = p.text.replace('{{name}}', str(df.iloc[0]['Имя']))
 
-    if os.path.exists(OUTPUT_DIR):
-        shutil.rmtree(OUTPUT_DIR)
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    for p in doc2.paragraphs:
+        p.text = p.text.replace('{{name}}', str(df.iloc[0]['Имя']))
 
-    for i, row in df.iterrows():
-        name = row.get("name", f"person_{i}")
-        context_dict = row.to_dict()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as zipf:
+        doc1_io = io.BytesIO()
+        doc1.save(doc1_io)
+        zipf.writestr('output1.docx', doc1_io.getvalue())
 
-        for doc_type, template_path in TEMPLATES.items():
-            filename = f"{doc_type}_{name}.docx"
-            filepath = os.path.join(OUTPUT_DIR, filename)
-            shutil.copy(template_path, filepath)
+        doc2_io = io.BytesIO()
+        doc2.save(doc2_io)
+        zipf.writestr('output2.docx', doc2_io.getvalue())
 
-            doc = Document(filepath)
+    buffer.seek(0)
+    return send_file(buffer, mimetype='application/zip', as_attachment=True, download_name='documents.zip')
 
-            for para in doc.paragraphs:
-                for key, value in context_dict.items():
-                    placeholder = f"{{{key}}}"
-                    if placeholder in para.text:
-                        para.text = para.text.replace(placeholder, str(value))
-
-            for table in doc.tables:
-                for row_cells in table.rows:
-                    for cell in row_cells.cells:
-                        for key, value in context_dict.items():
-                            placeholder = f"{{{key}}}"
-                            if placeholder in cell.text:
-                                cell.text = cell.text.replace(placeholder, str(value))
-
-            doc.save(filepath)
-
-    zip_path = "documents.zip"
-    with zipfile.ZipFile(zip_path, "w") as zipf:
-        for filename in os.listdir(OUTPUT_DIR):
-            zipf.write(os.path.join(OUTPUT_DIR, filename), arcname=filename)
-
-    await update.message.reply_document(document=open(zip_path, "rb"))
-    await update.message.reply_text("Готово! 😊")
-
-if __name__ == "__main__":
-    application = Application.builder().token(TOKEN).build()
-
-    handler = MessageHandler(filters.Document.FileExtension("xlsx"), handle_file)
-    application.add_handler(handler)
-
-    print("Бот запущен")
-    application.run_polling()
+if __name__ == '__main__':
+    app.run()
