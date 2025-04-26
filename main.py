@@ -1,4 +1,4 @@
-from flask import Flask, request, send_file, redirect, url_for, Response
+from flask import Flask, request, send_file, redirect, url_for, render_template_string
 import os
 import shutil
 import pandas as pd
@@ -13,152 +13,152 @@ app = Flask(__name__)
 TEMPLATES_FOLDER = 'templates'
 ACT_TEMPLATE = os.path.join(TEMPLATES_FOLDER, 'templ_akt.docx')
 CONTRACT_TEMPLATE = os.path.join(TEMPLATES_FOLDER, 'templ_dogovor.docx')
-
+GENERATED_FOLDER = 'generated_documents'
 ALLOWED_EXTENSIONS = {'xls', 'xlsx'}
 
-def allowed_file(filename, types):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in types
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Генерация документов</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            background-color: #f4f4f9;
+            margin: 0;
+            padding: 2em;
+        }
+        .container {
+            max-width: 600px;
+            margin: auto;
+            background: white;
+            padding: 2em;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h2 {
+            text-align: center;
+            margin-bottom: 1em;
+        }
+        form {
+            margin-bottom: 1em;
+        }
+        input[type=file], button {
+            padding: 0.5em;
+            margin-top: 0.5em;
+        }
+        hr {
+            margin: 2em 0;
+        }
+        ul {
+            padding-left: 1.2em;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Генерация документов</h2>
 
-def delayed_delete(path, delay_seconds=300):
-    """Удаляет файл через delay секунд после отправки пользователю"""
-    def delete_file():
-        time.sleep(delay_seconds)
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-            except:
-                pass
-    threading.Thread(target=delete_file).start()
+        <form method="POST" enctype="multipart/form-data" action="/upload">
+            <input type="file" name="file">
+            <br>
+            <button type="submit">Загрузить Excel</button>
+        </form>
 
-def clean_tmp_folder():
-    """Удаляет старые файлы Excel, docx, zip из /tmp при старте"""
-    patterns = ('.xlsx', '.docx', '.zip')
-    for filename in os.listdir('/tmp'):
-        if filename.endswith(patterns):
-            filepath = os.path.join('/tmp', filename)
-            try:
-                os.remove(filepath)
-            except Exception as e:
-                print(f"Не удалось удалить {filepath}: {e}")
+        <hr>
+
+        <p><strong>Обновить шаблон акта:</strong></p>
+        <form method="POST" enctype="multipart/form-data" action="/upload_template/akt">
+            <input type="file" name="file">
+            <br>
+            <button type="submit">Загрузить акт</button>
+        </form>
+
+        <p><strong>Обновить шаблон договора:</strong></p>
+        <form method="POST" enctype="multipart/form-data" action="/upload_template/dogovor">
+            <input type="file" name="file">
+            <br>
+            <button type="submit">Загрузить договор</button>
+        </form>
+
+        <hr>
+
+        <h3>Как пользоваться:</h3>
+        <ul>
+            <li>Подготовьте Excel-файл в формате .xls или .xlsx.</li>
+            <li>В первой строке — заголовки колонок (например: Имя, Дата, Адрес).</li>
+            <li>Каждая строка — отдельная запись для генерации документов.</li>
+            <li>Нажмите «Загрузить Excel» — начнётся обработка.</li>
+            <li>Через несколько секунд начнётся скачивание ZIP-архива с готовыми файлами.</li>
+        </ul>
+        <p><strong>Важно:</strong> Убедитесь, что Excel-файл заполнен корректно.</p>
+    </div>
+</body>
+</html>
+"""
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def generate_documents(df):
+    shutil.rmtree(GENERATED_FOLDER, ignore_errors=True)
+    os.makedirs(GENERATED_FOLDER, exist_ok=True)
+    for i, row in df.iterrows():
+        act = Document(ACT_TEMPLATE)
+        contract = Document(CONTRACT_TEMPLATE)
+
+        # Здесь ваша логика подстановки значений в шаблоны
+        act.paragraphs[0].text = str(row[0])
+        contract.paragraphs[0].text = str(row[0])
+
+        act.save(f"{GENERATED_FOLDER}/akt_{i+1}.docx")
+        contract.save(f"{GENERATED_FOLDER}/contract_{i+1}.docx")
+
+    zip_path = os.path.join(GENERATED_FOLDER, 'archive.zip')
+    with zipfile.ZipFile(zip_path, 'w') as zf:
+        for file in os.listdir(GENERATED_FOLDER):
+            if file.endswith('.docx'):
+                zf.write(os.path.join(GENERATED_FOLDER, file), file)
+    return zip_path
 
 @app.route('/')
 def index():
-    return '''
-    <!doctype html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <title>Генерация документов</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            h1 { color: #333; }
-            h2 { color: #555; }
-            ul { line-height: 1.6; }
-            p { margin-top: 10px; }
-            .instruction { background: #f9f9f9; padding: 20px; border-radius: 8px; }
-        </style>
-    </head>
-    <body>
-        <h1>Загрузка Excel-файла для генерации документов</h1>
-        <form action="/upload" method="post" enctype="multipart/form-data">
-            <input type="file" name="file" accept=".xls,.xlsx" required>
-            <input type="submit" value="Отправить">
-        </form>
-
-        <div class="instruction">
-            <h2>Как пользоваться:</h2>
-            <ul>
-                <li>Подготовьте Excel-файл в формате .xls или .xlsx.</li>
-                <li>В первой строке должны быть заголовки колонок (например: Имя, Дата, Адрес).</li>
-                <li>Каждая строка ниже — это отдельная запись для генерации документов.</li>
-                <li>Выберите файл и нажмите "Отправить".</li>
-                <li>Через несколько секунд начнётся скачивание архива ZIP с готовыми файлами.</li>
-            </ul>
-            <p><b>Важно:</b> Убедитесь, что файл заполнен корректно, чтобы избежать ошибок при генерации.</p>
-        </div>
-    </body>
-    </html>
-    '''
+    return render_template_string(HTML_TEMPLATE)
 
 @app.route('/upload', methods=['POST'])
-def upload_file():
-    if 'file' not in request.files:
-        return 'Нет файла в запросе', 400
+def upload():
+    file = request.files.get('file')
+    if file and allowed_file(file.filename):
+        df = pd.read_excel(file)
+        archive_path = generate_documents(df)
+        return send_file(archive_path, as_attachment=True)
+    return redirect(url_for('index'))
 
-    file = request.files['file']
+@app.route('/upload_template/<template_type>', methods=['POST'])
+def upload_template(template_type):
+    file = request.files.get('file')
+    if file and file.filename.endswith('.docx'):
+        if template_type == 'akt':
+            file.save(ACT_TEMPLATE)
+        elif template_type == 'dogovor':
+            file.save(CONTRACT_TEMPLATE)
+    return redirect(url_for('index'))
 
-    if file.filename == '':
-        return 'Файл не выбран', 400
-
-    if file and allowed_file(file.filename, ALLOWED_EXTENSIONS):
-        temp_excel_path = f"/tmp/{file.filename}"
-        file.save(temp_excel_path)
-
-        try:
-            df = pd.read_excel(temp_excel_path)
-
-            # Проверка содержимого Excel
-            if df.empty or df.shape[1] == 0:
-                os.remove(temp_excel_path)
-                return 'Ошибка: файл пустой или без столбцов.', 400
-
-            output_folder = "/tmp/generated_docs"
-            os.makedirs(output_folder, exist_ok=True)
-
-            for index, row in df.iterrows():
-                act = Document(ACT_TEMPLATE)
-                contract = Document(CONTRACT_TEMPLATE)
-
-                # Замена полей
-                for p in act.paragraphs:
-                    for key, value in row.items():
-                        if f"{{{{{key}}}}}" in p.text:
-                            p.text = p.text.replace(f"{{{{{key}}}}}", str(value))
-
-                for p in contract.paragraphs:
-                    for key, value in row.items():
-                        if f"{{{{{key}}}}}" in p.text:
-                            p.text = p.text.replace(f"{{{{{key}}}}}", str(value))
-
-                act_path = os.path.join(output_folder, f"akt_{index + 1}.docx")
-                contract_path = os.path.join(output_folder, f"contract_{index + 1}.docx")
-                act.save(act_path)
-                contract.save(contract_path)
-
-            zip_filename = f"/tmp/generated_docs_{datetime.now().strftime('%Y%m%d%H%M%S')}.zip"
-            with zipfile.ZipFile(zip_filename, 'w') as zipf:
-                for root, dirs, files in os.walk(output_folder):
-                    for file in files:
-                        filepath = os.path.join(root, file)
-                        zipf.write(filepath, arcname=file)
-
-            shutil.rmtree(output_folder)
-            os.remove(temp_excel_path)
-
-            response = send_file(zip_filename, as_attachment=True)
-
-            @response.call_on_close
-            def cleanup():
-                try:
-                    os.remove(zip_filename)
-                except:
-                    pass
-
-            delayed_delete(zip_filename, delay_seconds=300)
-
-            return response
-
-        except Exception as e:
-            if os.path.exists(temp_excel_path):
-                os.remove(temp_excel_path)
-            return f'Ошибка обработки: {str(e)}', 500
-
-    else:
-        return 'Неподдерживаемый тип файла', 400
-
-# Чистим мусор в /tmp при запуске сервера
-clean_tmp_folder()
+def cleanup_old_temp():
+    while True:
+        now = time.time()
+        for folder in ['generated_documents', 'temp']:  # если что-то ещё будет
+            if os.path.exists(folder):
+                for f in os.listdir(folder):
+                    path = os.path.join(folder, f)
+                    if os.path.isfile(path) and now - os.path.getmtime(path) > 600:
+                        os.remove(path)
+        time.sleep(300)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    os.makedirs(TEMPLATES_FOLDER, exist_ok=True)
+    os.makedirs(GENERATED_FOLDER, exist_ok=True)
+    threading.Thread(target=cleanup_old_temp, daemon=True).start()
+    port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
