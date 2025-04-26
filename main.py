@@ -1,164 +1,153 @@
-from flask import Flask, request, send_file, redirect, url_for, render_template_string
+from flask import Flask, request, send_file, redirect, url_for
 import os
 import shutil
 import pandas as pd
 from docx import Document
 import zipfile
 from datetime import datetime
-import threading
-import time
 
 app = Flask(__name__)
 
+UPLOAD_FOLDER = 'uploads'
+ACTS_FOLDER = 'generated_acts'
+CONTRACTS_FOLDER = 'generated_contracts'
 TEMPLATES_FOLDER = 'templates'
+TMP_FOLDER = 'tmp'
 ACT_TEMPLATE = os.path.join(TEMPLATES_FOLDER, 'templ_akt.docx')
 CONTRACT_TEMPLATE = os.path.join(TEMPLATES_FOLDER, 'templ_dogovor.docx')
-GENERATED_FOLDER = 'generated_documents'
-ALLOWED_EXTENSIONS = {'xls', 'xlsx'}
+ZIP_NAME = os.path.join(TMP_FOLDER, 'generated_documents.zip')
 
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <title>Генерация документов</title>
-    <style>
-        body {
-            font-family: sans-serif;
-            background-color: #f4f4f9;
-            margin: 0;
-            padding: 2em;
-        }
-        .container {
-            max-width: 600px;
-            margin: auto;
-            background: white;
-            padding: 2em;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-        }
-        h2 {
-            text-align: center;
-            margin-bottom: 1em;
-        }
-        form {
-            margin-bottom: 1em;
-        }
-        input[type=file], button {
-            padding: 0.5em;
-            margin-top: 0.5em;
-        }
-        hr {
-            margin: 2em 0;
-        }
-        ul {
-            padding-left: 1.2em;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h2>Генерация документов</h2>
+for folder in [UPLOAD_FOLDER, ACTS_FOLDER, CONTRACTS_FOLDER, TEMPLATES_FOLDER, TMP_FOLDER]:
+    os.makedirs(folder, exist_ok=True)
 
-        <form method="POST" enctype="multipart/form-data" action="/upload">
-            <input type="file" name="file">
-            <br>
-            <button type="submit">Загрузить Excel</button>
-        </form>
+ALLOWED_EXTENSIONS = {'xls', 'xlsx', 'docx'}
+success_message = ""
 
-        <hr>
-
-        <p><strong>Обновить шаблон акта:</strong></p>
-        <form method="POST" enctype="multipart/form-data" action="/upload_template/akt">
-            <input type="file" name="file">
-            <br>
-            <button type="submit">Загрузить акт</button>
-        </form>
-
-        <p><strong>Обновить шаблон договора:</strong></p>
-        <form method="POST" enctype="multipart/form-data" action="/upload_template/dogovor">
-            <input type="file" name="file">
-            <br>
-            <button type="submit">Загрузить договор</button>
-        </form>
-
-        <hr>
-
-        <h3>Как пользоваться:</h3>
-        <ul>
-            <li>Подготовьте Excel-файл в формате .xls или .xlsx.</li>
-            <li>В первой строке — заголовки колонок (например: Имя, Дата, Адрес).</li>
-            <li>Каждая строка — отдельная запись для генерации документов.</li>
-            <li>Нажмите «Загрузить Excel» — начнётся обработка.</li>
-            <li>Через несколько секунд начнётся скачивание ZIP-архива с готовыми файлами.</li>
-        </ul>
-        <p><strong>Важно:</strong> Убедитесь, что Excel-файл заполнен корректно.</p>
-    </div>
-</body>
-</html>
-"""
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def generate_documents(df):
-    shutil.rmtree(GENERATED_FOLDER, ignore_errors=True)
-    os.makedirs(GENERATED_FOLDER, exist_ok=True)
-    for i, row in df.iterrows():
-        act = Document(ACT_TEMPLATE)
-        contract = Document(CONTRACT_TEMPLATE)
-
-        # Здесь ваша логика подстановки значений в шаблоны
-        act.paragraphs[0].text = str(row[0])
-        contract.paragraphs[0].text = str(row[0])
-
-        act.save(f"{GENERATED_FOLDER}/akt_{i+1}.docx")
-        contract.save(f"{GENERATED_FOLDER}/contract_{i+1}.docx")
-
-    zip_path = os.path.join(GENERATED_FOLDER, 'archive.zip')
-    with zipfile.ZipFile(zip_path, 'w') as zf:
-        for file in os.listdir(GENERATED_FOLDER):
-            if file.endswith('.docx'):
-                zf.write(os.path.join(GENERATED_FOLDER, file), file)
-    return zip_path
+def allowed_file(filename, types):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in types
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE)
+    global success_message
+    msg = f"<p style='color:green'>{success_message}</p>" if success_message else ''
+    success_message = ''
+    return f'''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset='UTF-8'>
+            <title>Загрузка Excel-файла для генерации документов</title>
+        </head>
+        <body>
+            <h1>Загрузка Excel-файла для генерации документов</h1>
+            <form method='POST' enctype='multipart/form-data' action='/upload'>
+                <input type='file' name='file'><input type='submit' value='Отправить'>
+            </form>
+            <h2>Как пользоваться:</h2>
+            <ul>
+                <li>Подготовьте Excel-файл в формате .xls или .xlsx.</li>
+                <li>В первой строке должны быть заголовки колонок (например: Имя, Дата, Адрес).</li>
+                <li>Каждая строка ниже — это отдельная запись для генерации документов.</li>
+                <li>Выберите файл и нажмите «Отправить».</li>
+                <li>Через несколько секунд начнётся скачивание ZIP-архива с готовыми файлами.</li>
+            </ul>
+            <form method='POST' enctype='multipart/form-data' action='/upload_template'>
+                <h3>Обновить шаблон акта:</h3>
+                <input type='file' name='template_akt'><input type='submit' name='submit_type' value='Загрузить акт'><br><br>
+                <h3>Обновить шаблон договора:</h3>
+                <input type='file' name='template_dogovor'><input type='submit' name='submit_type' value='Загрузить договор'>
+            </form>
+            <p><b>Важно:</b> Убедитесь, что файл заполнен корректно, чтобы избежать ошибок при генерации.</p>
+            {msg}
+        </body>
+        </html>
+    '''
+
+@app.route('/upload_template', methods=['POST'])
+def upload_template():
+    global success_message
+    if 'submit_type' in request.form:
+        if request.form['submit_type'] == 'Загрузить акт' and 'template_akt' in request.files:
+            file = request.files['template_akt']
+            if allowed_file(file.filename, {'docx'}):
+                file.save(ACT_TEMPLATE)
+                success_message = 'Шаблон акта обновлён.'
+        elif request.form['submit_type'] == 'Загрузить договор' and 'template_dogovor' in request.files:
+            file = request.files['template_dogovor']
+            if allowed_file(file.filename, {'docx'}):
+                file.save(CONTRACT_TEMPLATE)
+                success_message = 'Шаблон договора обновлён.'
+    return redirect(url_for('index'))
 
 @app.route('/upload', methods=['POST'])
-def upload():
-    file = request.files.get('file')
-    if file and allowed_file(file.filename):
-        df = pd.read_excel(file)
-        archive_path = generate_documents(df)
-        return send_file(archive_path, as_attachment=True)
-    return redirect(url_for('index'))
+def upload_file():
+    global success_message
+    if 'file' not in request.files:
+        success_message = 'Нет файла в запросе.'
+        return redirect(url_for('index'))
 
-@app.route('/upload_template/<template_type>', methods=['POST'])
-def upload_template(template_type):
-    file = request.files.get('file')
-    if file and file.filename.endswith('.docx'):
-        if template_type == 'akt':
-            file.save(ACT_TEMPLATE)
-        elif template_type == 'dogovor':
-            file.save(CONTRACT_TEMPLATE)
-    return redirect(url_for('index'))
+    file = request.files['file']
+    if file.filename == '':
+        success_message = 'Файл не выбран.'
+        return redirect(url_for('index'))
 
-def cleanup_old_temp():
-    while True:
-        now = time.time()
-        for folder in ['generated_documents', 'temp']:  # если что-то ещё будет
-            if os.path.exists(folder):
-                for f in os.listdir(folder):
-                    path = os.path.join(folder, f)
-                    if os.path.isfile(path) and now - os.path.getmtime(path) > 600:
-                        os.remove(path)
-        time.sleep(300)
+    if file and allowed_file(file.filename, {'xls', 'xlsx'}):
+        filename = os.path.join(UPLOAD_FOLDER, file.filename)
+        file.save(filename)
+        return process_file(filename)
+    else:
+        success_message = 'Неверный формат файла.'
+        return redirect(url_for('index'))
+
+def replace_placeholders(doc: Document, data_row):
+    for para in doc.paragraphs:
+        for column in data_row.index:
+            placeholder = f"{{{column}}}"
+            if placeholder in para.text:
+                para.text = para.text.replace(placeholder, str(data_row[column]))
+
+    for table in doc.tables:
+        for row_cells in table.rows:
+            for cell in row_cells.cells:
+                for column in data_row.index:
+                    placeholder = f"{{{column}}}"
+                    if placeholder in cell.text:
+                        cell.text = cell.text.replace(placeholder, str(data_row[column]))
+
+def process_file(file_path):
+    global success_message
+
+    data = pd.read_excel(file_path, dtype=str)
+    if "date_pass" in data.columns:
+        data["date_pass"] = pd.to_datetime(data["date_pass"], errors='coerce').dt.strftime("%d.%m.%Y")
+
+    for index, row in data.iterrows():
+        act_filename = os.path.join(ACTS_FOLDER, f"{row['name']}_act.docx")
+        shutil.copy(ACT_TEMPLATE, act_filename)
+        new_act = Document(act_filename)
+        replace_placeholders(new_act, row)
+        new_act.save(act_filename)
+
+        contract_filename = os.path.join(CONTRACTS_FOLDER, f"{row['name']}_contract.docx")
+        shutil.copy(CONTRACT_TEMPLATE, contract_filename)
+        new_contract = Document(contract_filename)
+        replace_placeholders(new_contract, row)
+        new_contract.save(contract_filename)
+
+    with zipfile.ZipFile(ZIP_NAME, 'w') as zipf:
+        for folder in [ACTS_FOLDER, CONTRACTS_FOLDER]:
+            for root, dirs, files in os.walk(folder):
+                for file in files:
+                    path = os.path.join(root, file)
+                    zipf.write(path, os.path.relpath(path, folder))
+
+    shutil.rmtree(ACTS_FOLDER)
+    shutil.rmtree(CONTRACTS_FOLDER)
+    os.makedirs(ACTS_FOLDER)
+    os.makedirs(CONTRACTS_FOLDER)
+
+    success_message = 'Документы сгенерированы. Архив загружается...'
+    return send_file(ZIP_NAME, as_attachment=True)
 
 if __name__ == '__main__':
-    os.makedirs(TEMPLATES_FOLDER, exist_ok=True)
-    os.makedirs(GENERATED_FOLDER, exist_ok=True)
-    threading.Thread(target=cleanup_old_temp, daemon=True).start()
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
